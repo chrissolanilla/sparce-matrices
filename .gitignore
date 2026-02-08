@@ -1,0 +1,15 @@
+#binaries
+/main
+a.out
+
+#object files
+*.o
+
+#static / shared libs
+*.a
+*.so
+
+#debug stuff
+*.out
+*.exe
+
