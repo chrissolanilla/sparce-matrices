@@ -1,2 +1,5 @@
-default: gcc -O2 -std=c11 main.c -o main && ./main
+//default: gcc -O2 -std=c11 main.c -o main && ./main
+
+default: gcc -Iinclude -O2 -Wall -Wextra -std=c11 src/main.c src/util.c src/matrix_multiply_io.c src/formats.c src/spmv.c src/bench.c -o main && ./main
+
 

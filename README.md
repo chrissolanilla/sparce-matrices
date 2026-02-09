@@ -8,22 +8,35 @@ This project benchmarks sparse matrix-vector multiply
 - **JDS** (Jagged Diagonal Storage)
 - **TJDS** (Transpose-JDS)
 
-## Files
+## Project layout
 
-- `main.c` – all code
-- `ibm32.mtx` – small matrix (dense load is OK)
-- `memplus.mtx` – large sparse matrix (must NOT be loaded dense)
+- `src/main.c` – entry point that runs Q1, Q2,Q3,  Q4
+- `src/formats.c` – builders, frees  and print helpers for CRS/CCS/JDS/TJDS
+- `src/spmv.c` – SpMV kernels + double versions
+- `src/matrix_multiply_io.c` – .mtx loader and io
+- `src/bench.c` – timing loops + checksum helpers
+- `src/util.c` – small helpers for timing, printing, nnz count, and more
+- `include/` – headers
 
-## Build instuctions
+Matrices:
+- `ibm32.mtx`
+- `memplus.mtx`
+
+## Build  and run instuctions
 This shoudl work on a linux machine. I am using arch. You can compile with the following command:
+### manual build
 ```
-gcc -O2 -Wall -Wextra -std=c11 main.c -o main
+gcc -Iinclude -O2 -Wall -Wextra -std=c11 src/main.c src/util.c src/matrix_multiply_io.c src/formats.c src/spmv.c src/bench.c -o main
 ```
+### make file
+```
+make
+```
+
 running:
 ```
 ./main
 ```
-
 I have a run.txt which makes it easy to compile and run. This uses my existing [run](https://github.com/chrissolanilla/run) utility.
 This way its easy to build and run by simplying typing `run`
 
@@ -59,9 +72,9 @@ nRows = 6
 nCols = 6
 nnz = 15
 numJd = 3
-jdiag = [8, 8, 5, 8, 3, 10, 7, 9, 2, 7, 9, -2, 3, 9, -1]
-column_index = [2, 1, 1, 2, 0, 0, 3, 3, 4, 3, 1, 4, 4, 4, 5]
-perm = [2, 4, 5, 3, 1, 0]
+jdiag = [8, 8, 5, 10, 3, 8, 7, 9, 2, -2, 9, 7, 3, 9, -1]
+column_index = [2, 1, 1, 0, 0, 2, 3, 3, 4, 4, 1, 3, 4, 4, 5]
+perm = [2, 4, 5, 0, 1, 3]
 jdiag_ptr = [0, 6, 12, 15]
 
 TJDS 0-based
@@ -69,9 +82,9 @@ nRows = 6
 nCols = 6
 nnz = 15
 numTjd = 4
-tjd = [-2, 7, 9, 10, 8, -1, 3, 7, 8, 3, 8, 9, 9, 5, 2]
-row_index = [0, 2, 1, 0, 2, 5, 2, 3, 4, 1, 3, 4, 4, 5, 5]
-perm = [4, 3, 1, 0, 2, 5]
+tjd = [-2, 9, 7, 10, 8, -1, 3, 8, 7, 3, 8, 9, 5, 9, 2]
+row_index = [0, 1, 2, 0, 2, 5, 2, 4, 3, 1, 3, 4, 5, 4, 5]
+perm = [4, 1, 3, 0, 2, 5]
 tjd_ptr = [0, 6, 11, 14, 15]
 
 x = [1, 1, 1, 1, 1, 1]
@@ -87,12 +100,12 @@ nRows = 32
 nCols = 32
 nnz  = 126
 
-dense iters = 1000 time_ns = 376097 check = 6000
-dense iters = 10000 time_ns = 3735513 check = 60000
-crs iters = 1000 time_ns = 87419 check = 6000
-crs iters = 10000 time_ns = 866244 check = 60000
-tjds iters = 1000 time_ns = 105059 check = 6000
-tjds iters = 10000 time_ns = 1042852 check = 60000
+dense iters = 1000 time_ns = 384837 check = 6000
+dense iters = 10000 time_ns = 3890972 check = 60000
+crs iters = 1000 time_ns = 91440 check = 6000
+crs iters = 10000 time_ns = 877783 check = 60000
+tjds iters = 1000 time_ns = 107550 check = 6000
+tjds iters = 10000 time_ns = 1070212 check = 60000
 
 quick y peek: y[0]=6 y[1]=6 y[2]=8
 
@@ -102,10 +115,10 @@ nRows = 17758
 nCols = 17758
 nnz  = 126150
 
-crs iters = 1000 time_ns = 87169672 check = 0.0395903
-crs iters = 10000 time_ns = 947808104 check = 37.8752
-tjds iters = 1000 time_ns = 148635702 check = 0.0395903
-tjds iters = 10000 time_ns = 1284516559 check = 37.8752
+crs iters = 1000 time_ns = 85977006 check = 0.0395903
+crs iters = 10000 time_ns = 857776616 check = 37.8752
+tjds iters = 1000 time_ns = 128432472 check = 0.0395903
+tjds iters = 10000 time_ns = 1283238167 check = 37.8752
 
 verify:
   checksum crs  = 1096310.63023
