@@ -63,6 +63,42 @@ typedef struct {
     int v;
 } triplet_t;
 
+typedef struct {
+    int i;
+    int j;
+    double v;
+} triplet_d_t;
+
+typedef struct {
+    int n_rows;
+    int n_cols;
+    int nnz;
+    double *values;
+    int *col_idx;
+    int *row_ptr;
+} crs_d_t;
+
+typedef struct {
+    int n_rows;
+    int n_cols;
+    int nnz;
+    double *values;
+    int *row_idx;
+    int *col_ptr;
+} ccs_d_t;
+
+typedef struct {
+    int n_rows;
+    int n_cols;
+    int nnz;
+    int num_tjd;
+    double *tjd;
+    int *row_idx;
+    int *perm;
+    int *tjd_ptr;
+} tjds_d_t;
+
+
 static void free_crs(crs_t *a) {
     if (!a) return;
     free(a->values);
@@ -112,6 +148,43 @@ static void free_tjds(tjds_t *a) {
     a->nnz = 0;
     a->num_tjd = 0;
 }
+
+static void free_crs_d(crs_d_t *a) {
+    if (!a) return;
+    free(a->values);
+    free(a->col_idx);
+    free(a->row_ptr);
+    a->values = NULL;
+    a->col_idx = NULL;
+    a->row_ptr = NULL;
+    a->nnz = 0;
+}
+
+static void free_ccs_d(ccs_d_t *a) {
+    if (!a) return;
+    free(a->values);
+    free(a->row_idx);
+    free(a->col_ptr);
+    a->values = NULL;
+    a->row_idx = NULL;
+    a->col_ptr = NULL;
+    a->nnz = 0;
+}
+
+static void free_tjds_d(tjds_d_t *a) {
+    if (!a) return;
+    free(a->tjd);
+    free(a->row_idx);
+    free(a->perm);
+    free(a->tjd_ptr);
+    a->tjd = NULL;
+    a->row_idx = NULL;
+    a->perm = NULL;
+    a->tjd_ptr = NULL;
+    a->nnz = 0;
+    a->num_tjd = 0;
+}
+
 
 static void print_int_array(const char *name, const int *a, int n) {
     printf("%s = [", name);
@@ -345,6 +418,85 @@ static int mm_read_triplets_int(const char *path, triplet_t **out_t, int *out_ro
     *out_nnz = used;
     return 1;
 }
+
+static int mm_read_triplets_double(const char *path, triplet_d_t **out_t, int *out_rows, int *out_cols, int *out_nnz) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    char line[512];
+    if (!fgets(line, sizeof(line), f)) { fclose(f); return 0; }
+    if (line[0] != '%' || line[1] != '%') { fclose(f); return 0; }
+
+    int is_pattern = 0;
+    int symmetric = 0;
+    if (strstr(line, "pattern")) is_pattern = 1;
+    if (strstr(line, "skew-symmetric")) symmetric = 2;
+    else if (strstr(line, "symmetric")) symmetric = 1;
+
+    do {
+        if (!fgets(line, sizeof(line), f)) { fclose(f); return 0; }
+    } while (line[0] == '%');
+
+    int n_rows = 0, n_cols = 0, nnz = 0;
+    if (sscanf(line, "%d %d %d", &n_rows, &n_cols, &nnz) != 3) { fclose(f); return 0; }
+
+    /*  if symmetric, we lowkeyh expand entries */
+    int cap = (symmetric ? (2 * nnz) : nnz);
+    triplet_d_t *t = (triplet_d_t *)malloc((size_t)cap * sizeof(triplet_d_t));
+    if (!t) { fclose(f); return 0; }
+
+    int used = 0;
+
+    for (int k = 0; k < nnz; k++) {
+        int i = 0, j = 0;
+        double v = 1.0;
+
+        if (is_pattern) {
+            if (fscanf(f, "%d %d", &i, &j) != 2) { free(t); fclose(f); return 0; }
+            v = 1.0;
+        } else {
+            if (fscanf(f, "%d %d %lf", &i, &j, &v) != 3) { free(t); fclose(f); return 0; }
+        }
+
+        i--; j--;
+
+        if (i < 0 || i >= n_rows || j < 0 || j >= n_cols) {
+            free(t); fclose(f); return 0;
+        }
+
+        if (used >= cap) {
+            cap *= 2;
+            triplet_d_t *nt = (triplet_d_t *)realloc(t, (size_t)cap * sizeof(triplet_d_t));
+            if (!nt) { free(t); fclose(f); return 0; }
+            t = nt;
+        }
+
+        t[used++] = (triplet_d_t){ .i = i, .j = j, .v = v };
+
+        if (symmetric && i != j) {
+            double vv = v;
+            if (symmetric == 2) vv = -vv;
+
+            if (used >= cap) {
+                cap *= 2;
+                triplet_d_t *nt = (triplet_d_t *)realloc(t, (size_t)cap * sizeof(triplet_d_t));
+                if (!nt) { free(t); fclose(f); return 0; }
+                t = nt;
+            }
+
+            t[used++] = (triplet_d_t){ .i = j, .j = i, .v = vv };
+        }
+    }
+
+    fclose(f);
+
+    *out_t = t;
+    *out_rows = n_rows;
+    *out_cols = n_cols;
+    *out_nnz = used;
+    return 1;
+}
+
 
 static crs_t build_crs_from_dense(const int *dense, int n_rows, int n_cols) {
     crs_t a;
@@ -713,6 +865,81 @@ static int build_ccs_from_triplets(int n_rows, int n_cols, const triplet_t *t, i
     return 1;
 }
 
+static int build_crs_from_triplets_double(int n_rows, int n_cols,
+                                         const triplet_d_t *t, int nnz, crs_d_t *out) {
+    crs_d_t a;
+    a.n_rows = n_rows;
+    a.n_cols = n_cols;
+    a.nnz = nnz;
+
+    a.values = (double *)malloc((size_t)nnz * sizeof(double));
+    a.col_idx = (int *)malloc((size_t)nnz * sizeof(int));
+    a.row_ptr = (int *)calloc((size_t)n_rows + 1, sizeof(int));
+    if (!a.values || !a.col_idx || !a.row_ptr) { free_crs_d(&a); return 0; }
+
+    for (int k = 0; k < nnz; k++) {
+        int i = t[k].i;
+        if (i < 0 || i >= n_rows) { free_crs_d(&a); return 0; }
+        a.row_ptr[i + 1]++;
+    }
+
+    for (int i = 0; i < n_rows; i++) a.row_ptr[i + 1] += a.row_ptr[i];
+
+    int *next = (int *)malloc((size_t)n_rows * sizeof(int));
+    if (!next) { free_crs_d(&a); return 0; }
+    for (int i = 0; i < n_rows; i++) next[i] = a.row_ptr[i];
+
+    for (int k = 0; k < nnz; k++) {
+        int i = t[k].i;
+        int j = t[k].j;
+        int pos = next[i]++;
+        a.values[pos] = t[k].v;
+        a.col_idx[pos] = j;
+    }
+
+    free(next);
+    *out = a;
+    return 1;
+}
+
+static int build_ccs_from_triplets_double(int n_rows, int n_cols,
+                                         const triplet_d_t *t, int nnz, ccs_d_t *out) {
+    ccs_d_t a;
+    a.n_rows = n_rows;
+    a.n_cols = n_cols;
+    a.nnz = nnz;
+
+    a.values = (double *)malloc((size_t)nnz * sizeof(double));
+    a.row_idx = (int *)malloc((size_t)nnz * sizeof(int));
+    a.col_ptr = (int *)calloc((size_t)n_cols + 1, sizeof(int));
+    if (!a.values || !a.row_idx || !a.col_ptr) { free_ccs_d(&a); return 0; }
+
+    for (int k = 0; k < nnz; k++) {
+        int j = t[k].j;
+        if (j < 0 || j >= n_cols) { free_ccs_d(&a); return 0; }
+        a.col_ptr[j + 1]++;
+    }
+
+    for (int j = 0; j < n_cols; j++) a.col_ptr[j + 1] += a.col_ptr[j];
+
+    int *next = (int *)malloc((size_t)n_cols * sizeof(int));
+    if (!next) { free_ccs_d(&a); return 0; }
+    for (int j = 0; j < n_cols; j++) next[j] = a.col_ptr[j];
+
+    for (int k = 0; k < nnz; k++) {
+        int i = t[k].i;
+        int j = t[k].j;
+        int pos = next[j]++;
+        a.values[pos] = t[k].v;
+        a.row_idx[pos] = i;
+    }
+
+    free(next);
+    *out = a;
+    return 1;
+}
+
+
 /* builds TJDS from CCSfor memplus because we already have columns */
 static tjds_t build_tjds_from_ccs(const ccs_t *c) {
     tjds_t a;
@@ -787,6 +1014,100 @@ static tjds_t build_tjds_from_ccs(const ccs_t *c) {
 
     return a;
 }
+
+static tjds_d_t build_tjds_from_ccs_double(const ccs_d_t *c) {
+    tjds_d_t a;
+    a.n_rows = c->n_rows;
+    a.n_cols = c->n_cols;
+    a.nnz = c->nnz;
+
+    a.num_tjd = 0;
+    a.tjd = NULL;
+    a.row_idx = NULL;
+    a.perm = NULL;
+    a.tjd_ptr = NULL;
+
+    int n_cols = c->n_cols;
+
+    int *col_nnz = (int *)malloc((size_t)n_cols * sizeof(int));
+    int *order = (int *)malloc((size_t)n_cols * sizeof(int));
+    if (!col_nnz || !order) { free(col_nnz); free(order); return a; }
+
+    for (int j = 0; j < n_cols; j++) {
+        int count = c->col_ptr[j + 1] - c->col_ptr[j];
+        col_nnz[j] = count;
+        order[j] = j;
+        if (count > a.num_tjd) a.num_tjd = count;
+    }
+
+    for (int i = 0; i < n_cols; i++) {
+        for (int j = i + 1; j < n_cols; j++) {
+            if (col_nnz[order[j]] > col_nnz[order[i]]) {
+                int tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+            }
+        }
+    }
+
+    a.perm = (int *)malloc((size_t)n_cols * sizeof(int));
+    a.tjd = (double *)malloc((size_t)a.nnz * sizeof(double));
+    a.row_idx = (int *)malloc((size_t)a.nnz * sizeof(int));
+    a.tjd_ptr = (int *)malloc((size_t)(a.num_tjd + 1) * sizeof(int));
+    if (!a.perm || !a.tjd || !a.row_idx || !a.tjd_ptr) {
+        free(col_nnz); free(order);
+        free_tjds_d(&a);
+        return a;
+    }
+
+    for (int cidx = 0; cidx < n_cols; cidx++) a.perm[cidx] = order[cidx];
+
+    int k = 0;
+    a.tjd_ptr[0] = 0;
+
+    for (int d = 0; d < a.num_tjd; d++) {
+        for (int cidx = 0; cidx < n_cols; cidx++) {
+            int orig_col = a.perm[cidx];
+            if (d < col_nnz[orig_col]) {
+                int base = c->col_ptr[orig_col];
+                a.tjd[k] = c->values[base + d];
+                a.row_idx[k] = c->row_idx[base + d];
+                k++;
+            }
+        }
+        a.tjd_ptr[d + 1] = k;
+    }
+
+    free(col_nnz);
+    free(order);
+    return a;
+}
+
+static void crs_spmv_double(const crs_d_t *a, const double *x, double *y) {
+    for (int i = 0; i < a->n_rows; i++) {
+        double sum = 0.0;
+        for (int k = a->row_ptr[i]; k < a->row_ptr[i + 1]; k++) {
+            sum += a->values[k] * x[a->col_idx[k]];
+        }
+        y[i] = sum;
+    }
+}
+
+static void tjds_spmv_double(const tjds_d_t *a, const double *x, double *y) {
+    for (int i = 0; i < a->n_rows; i++) y[i] = 0.0;
+
+    for (int d = 0; d < a->num_tjd; d++) {
+        int start = a->tjd_ptr[d];
+        int end = a->tjd_ptr[d + 1];
+        int len = end - start;
+
+        for (int cidx = 0; cidx < len; cidx++) {
+            int k = start + cidx;
+            int col = a->perm[cidx];
+            int row = a->row_idx[k];
+            y[row] += a->tjd[k] * x[col];
+        }
+    }
+}
+
 
 static void dense_spmv(const int *a, int n_rows, int n_cols, const int *x, int *y) {
     for (int i = 0; i < n_rows; i++) {
@@ -1066,91 +1387,203 @@ static void run_ibm32_dense(const char *mtx_path) {
     free(y);
 }
 
+/* static void run_memplus_sparse(const char *mtx_path) { */
+/*     triplet_t *t = NULL; */
+/*     int n_rows = 0, n_cols = 0, nnz = 0; */
+/**/
+/*     if (!mm_read_triplets_int(mtx_path, &t, &n_rows, &n_cols, &nnz)) { */
+/*         printf("=== Q4 MEMPLUS ===\n"); */
+/*         printf("couldn't open %s (skipping)\n\n", mtx_path); */
+/*         return; */
+/*     } */
+/**/
+/*     printf("=== Q4 MEMPLUS loaded ===\n"); */
+/*     printf("file = %s\n", mtx_path); */
+/*     printf("nRows = %d\n", n_rows); */
+/*     printf("nCols = %d\n", n_cols); */
+/*     printf("nnz  = %d\n\n", nnz); */
+/**/
+/*     crs_t crs; */
+/*     if (!build_crs_from_triplets(n_rows, n_cols, t, nnz, &crs)) { */
+/*         fprintf(stderr, "failed building crs from triplets\n"); */
+/*         free(t); */
+/*         return; */
+/*     } */
+/**/
+/*     ccs_t ccs; */
+/*     if (!build_ccs_from_triplets(n_rows, n_cols, t, nnz, &ccs)) { */
+/*         fprintf(stderr, "failed building ccs from triplets\n"); */
+/*         free_crs(&crs); */
+/*         free(t); */
+/*         return; */
+/*     } */
+/**/
+/*     tjds_t tjds = build_tjds_from_ccs(&ccs); */
+/**/
+/*     int *x = (int *)malloc((size_t)n_cols * sizeof(int)); */
+/*     int *y_crs = (int *)malloc((size_t)n_rows * sizeof(int)); */
+/*     int *y_tjds = (int *)malloc((size_t)n_rows * sizeof(int)); */
+/*     if (!x || !y_crs || !y_tjds) { */
+/*         fprintf(stderr, "malloc failed\n"); */
+/*         free(x); */
+/*         free(y_crs); */
+/*         free(y_tjds); */
+/*         free_tjds(&tjds); */
+/*         free_ccs(&ccs); */
+/*         free_crs(&crs); */
+/*         free(t); */
+/*         return; */
+/*     } */
+/**/
+/*     for (int i = 0; i < n_cols; i++) x[i] = 1; */
+/**/
+/*     bench_crs(&crs, x, y_crs, 1000); */
+/*     bench_crs(&crs, x, y_crs, 10000); */
+/**/
+/*     bench_tjds(&tjds, x, y_tjds, 1000); */
+/*     bench_tjds(&tjds, x, y_tjds, 10000); */
+/**/
+/*     /* compare checksums + a few entries  */
+/*     crs_spmv(&crs, x, y_crs); */
+/*     tjds_spmv(&tjds, x, y_tjds); */
+/**/
+/*     long long s1 = checksum_vec(y_crs, n_rows); */
+/*     long long s2 = checksum_vec(y_tjds, n_rows); */
+/**/
+/*     printf("\nverify:\n"); */
+/*     printf("  checksum crs  = %lld\n", s1); */
+/*     printf("  checksum tjds = %lld\n", s2); */
+/*     printf("  y[0]=%d vs %d\n", y_crs[0], y_tjds[0]); */
+/*     if (n_rows > 1) printf("  y[1]=%d vs %d\n", y_crs[1], y_tjds[1]); */
+/*     if (n_rows > 2) printf("  y[2]=%d vs %d\n", y_crs[2], y_tjds[2]); */
+/**/
+/*     if (s1 != s2) { */
+/*         printf("  bruh: checksum mismatch (tjds bug)\n"); */
+/*     } else { */
+/*         printf("  ok: checksums match\n"); */
+/*     } */
+/*     printf("\n"); */
+/**/
+/*     free(x); */
+/*     free(y_crs); */
+/*     free(y_tjds); */
+/*     free_tjds(&tjds); */
+/*     free_ccs(&ccs); */
+/*     free_crs(&crs); */
+/*     free(t); */
+/* } */
+
+static double checksum_vec_double(const double *y, int n) {
+    double s = 0.0;
+    for (int i = 0; i < n; i++) s += y[i] * (double)(i + 1);
+    return s;
+}
+
+static void bench_crs_double(const crs_d_t *a, const double *x, double *y, int iters) {
+    long long t0 = now_ns();
+    double check = 0.0;
+    for (int k = 0; k < iters; k++) {
+        crs_spmv_double(a, x, y);
+        check += y[k % a->n_rows]; /* avoids “y[0] is 0” useless check */
+    }
+    long long t1 = now_ns();
+    printf("crs iters = %d time_ns = %lld check = %.6g\n", iters, (t1 - t0), check);
+}
+
+static void bench_tjds_double(const tjds_d_t *a, const double *x, double *y, int iters) {
+    long long t0 = now_ns();
+    double check = 0.0;
+    for (int k = 0; k < iters; k++) {
+        tjds_spmv_double(a, x, y);
+        check += y[k % a->n_rows];
+    }
+    long long t1 = now_ns();
+    printf("tjds iters = %d time_ns = %lld check = %.6g\n", iters, (t1 - t0), check);
+}
+
 static void run_memplus_sparse(const char *mtx_path) {
-    triplet_t *t = NULL;
+    triplet_d_t *t = NULL;
     int n_rows = 0, n_cols = 0, nnz = 0;
 
-    if (!mm_read_triplets_int(mtx_path, &t, &n_rows, &n_cols, &nnz)) {
+    if (!mm_read_triplets_double(mtx_path, &t, &n_rows, &n_cols, &nnz)) {
         printf("=== Q4 MEMPLUS ===\n");
         printf("couldn't open %s (skipping)\n\n", mtx_path);
         return;
     }
 
-    printf("=== Q4 MEMPLUS loaded ===\n");
+    printf("=== Q4 MEMPLUS loaded (double) ===\n");
     printf("file = %s\n", mtx_path);
     printf("nRows = %d\n", n_rows);
     printf("nCols = %d\n", n_cols);
     printf("nnz  = %d\n\n", nnz);
 
-    crs_t crs;
-    if (!build_crs_from_triplets(n_rows, n_cols, t, nnz, &crs)) {
-        fprintf(stderr, "failed building crs from triplets\n");
+    crs_d_t crs;
+    if (!build_crs_from_triplets_double(n_rows, n_cols, t, nnz, &crs)) {
+        fprintf(stderr, "failed building crs(double)\n");
         free(t);
         return;
     }
 
-    ccs_t ccs;
-    if (!build_ccs_from_triplets(n_rows, n_cols, t, nnz, &ccs)) {
-        fprintf(stderr, "failed building ccs from triplets\n");
-        free_crs(&crs);
+    ccs_d_t ccs;
+    if (!build_ccs_from_triplets_double(n_rows, n_cols, t, nnz, &ccs)) {
+        fprintf(stderr, "failed building ccs(double)\n");
+        free_crs_d(&crs);
         free(t);
         return;
     }
 
-    tjds_t tjds = build_tjds_from_ccs(&ccs);
+    tjds_d_t tjds = build_tjds_from_ccs_double(&ccs);
 
-    int *x = (int *)malloc((size_t)n_cols * sizeof(int));
-    int *y_crs = (int *)malloc((size_t)n_rows * sizeof(int));
-    int *y_tjds = (int *)malloc((size_t)n_rows * sizeof(int));
+    double *x = (double *)malloc((size_t)n_cols * sizeof(double));
+    double *y_crs = (double *)malloc((size_t)n_rows * sizeof(double));
+    double *y_tjds = (double *)malloc((size_t)n_rows * sizeof(double));
     if (!x || !y_crs || !y_tjds) {
         fprintf(stderr, "malloc failed\n");
-        free(x);
-        free(y_crs);
-        free(y_tjds);
-        free_tjds(&tjds);
-        free_ccs(&ccs);
-        free_crs(&crs);
+        free(x); free(y_crs); free(y_tjds);
+        free_tjds_d(&tjds);
+        free_ccs_d(&ccs);
+        free_crs_d(&crs);
         free(t);
         return;
     }
 
-    for (int i = 0; i < n_cols; i++) x[i] = 1;
+    for (int i = 0; i < n_cols; i++) x[i] = 1.0;
 
-    bench_crs(&crs, x, y_crs, 1000);
-    bench_crs(&crs, x, y_crs, 10000);
+    bench_crs_double(&crs, x, y_crs, 1000);
+    bench_crs_double(&crs, x, y_crs, 10000);
 
-    bench_tjds(&tjds, x, y_tjds, 1000);
-    bench_tjds(&tjds, x, y_tjds, 10000);
+    bench_tjds_double(&tjds, x, y_tjds, 1000);
+    bench_tjds_double(&tjds, x, y_tjds, 10000);
 
-    /* compare checksums + a few entries */
-    crs_spmv(&crs, x, y_crs);
-    tjds_spmv(&tjds, x, y_tjds);
+    /* verify */
+    crs_spmv_double(&crs, x, y_crs);
+    tjds_spmv_double(&tjds, x, y_tjds);
 
-    long long s1 = checksum_vec(y_crs, n_rows);
-    long long s2 = checksum_vec(y_tjds, n_rows);
+    double s1 = checksum_vec_double(y_crs, n_rows);
+    double s2 = checksum_vec_double(y_tjds, n_rows);
 
     printf("\nverify:\n");
-    printf("  checksum crs  = %lld\n", s1);
-    printf("  checksum tjds = %lld\n", s2);
-    printf("  y[0]=%d vs %d\n", y_crs[0], y_tjds[0]);
-    if (n_rows > 1) printf("  y[1]=%d vs %d\n", y_crs[1], y_tjds[1]);
-    if (n_rows > 2) printf("  y[2]=%d vs %d\n", y_crs[2], y_tjds[2]);
+    printf("  checksum crs  = %.12g\n", s1);
+    printf("  checksum tjds = %.12g\n", s2);
+    printf("  y[0]=%.6g vs %.6g\n", y_crs[0], y_tjds[0]);
+    if (n_rows > 1) printf("  y[1]=%.6g vs %.6g\n", y_crs[1], y_tjds[1]);
+    if (n_rows > 2) printf("  y[2]=%.6g vs %.6g\n", y_crs[2], y_tjds[2]);
 
-    if (s1 != s2) {
-        printf("  bruh: checksum mismatch (tjds bug)\n");
-    } else {
-        printf("  ok: checksums match\n");
-    }
+    double diff = s1 - s2;
+    if (diff < 0) diff = -diff;
+    if (diff > 1e-8) printf("  bruh: checksum mismatch (tjds bug)\n");
+    else printf("  ok: checksums match\n");
     printf("\n");
 
     free(x);
     free(y_crs);
     free(y_tjds);
-    free_tjds(&tjds);
-    free_ccs(&ccs);
-    free_crs(&crs);
+    free_tjds_d(&tjds);
+    free_ccs_d(&ccs);
+    free_crs_d(&crs);
     free(t);
 }
+
 
 int main(void) {
     demo_q1();
